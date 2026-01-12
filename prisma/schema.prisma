@@ -1,0 +1,326 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// User model - Core user account
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  password          String
+  name              String?
+  emailVerified     DateTime?
+  isEmailVerified   Boolean   @default(false)
+  emailVerifyToken  String?   @unique
+  resetPasswordToken String?  @unique
+  resetPasswordExpires DateTime?
+
+  // Instagram connection
+  instagramUserId   String?   @unique
+  instagramUsername String?
+  instagramToken    String?   // Encrypted OAuth token
+  instagramTokenExpiry DateTime?
+
+  // Account status
+  isActive          Boolean   @default(true)
+  isSuspended       Boolean   @default(false)
+  suspensionReason  String?
+
+  // Settings
+  emailNotifications Boolean  @default(true)
+  lowCreditThreshold Int      @default(20)
+
+  // Timestamps
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastLoginAt       DateTime?
+
+  // Relations
+  credits           Credit[]
+  transactions      Transaction[]
+  automationRules   AutomationRule[]
+  messageTemplates  MessageTemplate[]
+  dmLogs            DmLog[]
+  analyticsDaily    AnalyticsDaily[]
+
+  @@index([email])
+  @@index([instagramUserId])
+}
+
+// Credit model - Track user credits
+model Credit {
+  id            String    @id @default(cuid())
+  userId        String
+  amount        Int       @default(0)
+  expiresAt     DateTime? // Optional credit expiration
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Transaction model - Payment and credit history
+model Transaction {
+  id                String   @id @default(cuid())
+  userId            String
+  type              TransactionType
+  amount            Int      // Credits amount
+  price             Float?   // Price in dollars (for purchases)
+  stripeSessionId   String?  @unique
+  stripePaymentIntentId String? @unique
+  status            TransactionStatus @default(PENDING)
+  description       String?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([stripeSessionId])
+  @@index([createdAt])
+}
+
+enum TransactionType {
+  PURCHASE
+  USAGE
+  REFUND
+  BONUS
+  ADMIN_ADJUSTMENT
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+// Automation Rule model - User-defined automation rules
+model AutomationRule {
+  id                String   @id @default(cuid())
+  userId            String
+  name              String
+  description       String?
+  isActive          Boolean  @default(true)
+
+  // Target configuration
+  targetType        TargetType @default(ALL_POSTS)
+  targetPostUrls    String[] // Array of specific post URLs
+  targetHashtags    String[] // Array of hashtags
+  targetDateRange   String?  // JSON: {start, end, type: "last_7_days" | "last_30_days" | "custom"}
+
+  // Keyword configuration
+  keywords          String[] // Keywords to match
+  keywordLogic      KeywordLogic @default(OR)
+  caseSensitive     Boolean  @default(false)
+  excludeKeywords   String[] // Negative keywords
+
+  // Filters
+  mustBeFollower    Boolean  @default(true)
+  cooldownHours     Int      @default(24)
+  minAccountAgeDays Int?
+  requirePublicAccount Boolean @default(false)
+  minCommentLength  Int?
+  maxCommentLength  Int?
+
+  // Message template
+  messageTemplateId String?
+
+  // Scheduling
+  scheduleType      ScheduleType @default(IMMEDIATE)
+  scheduledStartAt  DateTime?
+  scheduledEndAt    DateTime?
+
+  // Rate limiting per rule
+  maxDmsPerDay      Int      @default(50)
+
+  // Priority
+  priority          Int      @default(0)
+
+  // Stats
+  totalTriggered    Int      @default(0)
+  totalSent         Int      @default(0)
+  totalFailed       Int      @default(0)
+  lastTriggeredAt   DateTime?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageTemplate   MessageTemplate? @relation(fields: [messageTemplateId], references: [id], onDelete: SetNull)
+  dmLogs            DmLog[]
+
+  @@index([userId])
+  @@index([isActive])
+  @@index([userId, isActive])
+}
+
+enum TargetType {
+  ALL_POSTS
+  SPECIFIC_POSTS
+  HASHTAG_POSTS
+  RECENT_POSTS
+}
+
+enum KeywordLogic {
+  OR
+  AND
+}
+
+enum ScheduleType {
+  IMMEDIATE
+  SCHEDULED
+  RECURRING
+}
+
+// Message Template model - Reusable message templates
+model MessageTemplate {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String
+  content       String   @db.Text
+
+  // A/B testing
+  variant       String?  // e.g., "A", "B", "C"
+
+  // Stats
+  timesSent     Int      @default(0)
+  responseRate  Float    @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  automationRules AutomationRule[]
+  dmLogs        DmLog[]
+
+  @@index([userId])
+}
+
+// DM Log model - Track all sent DMs
+model DmLog {
+  id                String   @id @default(cuid())
+  userId            String
+  automationRuleId  String?
+  messageTemplateId String?
+
+  // Recipient info
+  recipientUsername String
+  recipientUserId   String
+
+  // Message details
+  messageContent    String   @db.Text
+  triggerComment    String?  @db.Text
+  postUrl           String?
+
+  // Status
+  status            DmStatus @default(PENDING)
+  failureReason     String?
+
+  // Credits
+  creditsUsed       Int      @default(1)
+
+  // Metadata
+  sentAt            DateTime?
+  processedAt       DateTime @default(now())
+
+  createdAt         DateTime @default(now())
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  automationRule    AutomationRule? @relation(fields: [automationRuleId], references: [id], onDelete: SetNull)
+  messageTemplate   MessageTemplate? @relation(fields: [messageTemplateId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([automationRuleId])
+  @@index([recipientUserId])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+enum DmStatus {
+  PENDING
+  SENT
+  FAILED
+  RATE_LIMITED
+  BLOCKED
+}
+
+// Analytics Daily model - Daily aggregated analytics
+model AnalyticsDaily {
+  id            String   @id @default(cuid())
+  userId        String
+  date          DateTime @db.Date
+
+  // Metrics
+  dmsSent       Int      @default(0)
+  dmsFailed     Int      @default(0)
+  creditsUsed   Int      @default(0)
+  creditsPurchased Int   @default(0)
+
+  // Rates
+  successRate   Float    @default(0)
+
+  // Active rules
+  activeRules   Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+// Rate Limit Tracking - Track DM sending to prevent spam
+model RateLimitTracker {
+  id            String   @id @default(cuid())
+  userId        String
+  recipientUserId String
+
+  lastContactedAt DateTime @default(now())
+  contactCount  Int      @default(1)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, recipientUserId])
+  @@index([userId])
+  @@index([lastContactedAt])
+}
+
+// System Log - Track system events and errors
+model SystemLog {
+  id            String   @id @default(cuid())
+  level         LogLevel @default(INFO)
+  category      String
+  message       String   @db.Text
+  metadata      Json?
+
+  userId        String?
+
+  createdAt     DateTime @default(now())
+
+  @@index([level])
+  @@index([category])
+  @@index([createdAt])
+  @@index([userId])
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  CRITICAL
+}
