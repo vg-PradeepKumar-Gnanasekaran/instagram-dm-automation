@@ -1,57 +1,33 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
+import { useRouter, useParams } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import { WorkflowBuilder } from '@/components/workflow/workflow-builder';
 import {
-  MessageCircle,
-  Reply,
-  Sparkles,
   ArrowLeft,
-  Check,
-  Zap,
-  Wrench,
+  Save,
+  Loader2,
   LayoutTemplate,
+  Wrench,
 } from 'lucide-react';
 
-// Pre-built templates (same as before)
-const templates = [
-  {
-    id: 'comment-reply',
-    name: 'Comment Reply Automator',
-    description: 'Automatically reply to comments on your posts',
-    icon: Reply,
-    color: 'bg-blue-500',
-    keywords: ['thank', 'thanks', 'love', 'amazing'],
-    message: 'Thank you! 🙏',
-    targetType: 'ALL_POSTS',
-    mustBeFollower: true,
-  },
-  {
-    id: 'comment-dm-combo',
-    name: 'Comment + DM Combo',
-    description: 'Reply AND send DM',
-    icon: MessageCircle,
-    color: 'bg-purple-500',
-    keywords: ['interested', 'info', 'price'],
-    message: 'Check your DMs! 📩',
-    dmMessage: 'Hey! Details here...',
-    targetType: 'ALL_POSTS',
-    mustBeFollower: false,
-  },
-];
-
-export default function NewRulePage() {
+export default function EditRulePage() {
   const router = useRouter();
+  const params = useParams();
+  const ruleId = params.id as string;
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<'template' | 'advanced'>('template');
-  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+
+  // Rule data
+  const [ruleData, setRuleData] = useState<any>(null);
 
   // Template mode form data
   const [formData, setFormData] = useState({
@@ -64,61 +40,54 @@ export default function NewRulePage() {
     mustBeFollower: true,
   });
 
-  const handleTemplateSelect = (templateId: string) => {
-    const template = templates.find(t => t.id === templateId);
-    if (template) {
-      setSelectedTemplate(templateId);
-      setFormData({
-        name: template.name,
-        description: template.description,
-        keywords: template.keywords.join(', '),
-        message: template.message,
-        dmMessage: template.dmMessage || '',
-        targetType: template.targetType,
-        mustBeFollower: template.mustBeFollower,
-      });
-    }
-  };
+  // Load existing rule
+  useEffect(() => {
+    const fetchRule = async () => {
+      try {
+        const response = await fetch(`/api/rules/${ruleId}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch rule');
+        }
 
-  const handleWorkflowSave = async (nodes: any[]) => {
-    setLoading(true);
-    try {
-      // Convert workflow nodes to rule format
-      const ruleData = {
-        name: formData.name || 'Advanced Workflow',
-        description: 'Custom workflow automation',
-        workflow: nodes, // Store the entire workflow
-        targetType: 'ALL_POSTS',
-        isActive: true,
-      };
+        const data = await response.json();
+        const rule = data.rule;
 
-      const response = await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ruleData),
-      });
+        setRuleData(rule);
 
-      if (response.ok) {
-        router.push('/dashboard/rules');
-      } else {
-        alert('Failed to create workflow');
+        // Determine mode based on whether workflow exists
+        if (rule.workflow && Array.isArray(rule.workflow)) {
+          setMode('advanced');
+        } else {
+          setMode('template');
+          setFormData({
+            name: rule.name || '',
+            description: rule.description || '',
+            keywords: rule.keywords?.join(', ') || '',
+            message: rule.messageTemplate?.content || '',
+            dmMessage: '',
+            targetType: rule.targetType || 'ALL_POSTS',
+            mustBeFollower: rule.mustBeFollower ?? true,
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching rule:', err);
+        setError('Failed to load rule');
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Failed to create workflow');
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    fetchRule();
+  }, [ruleId]);
 
   const handleTemplateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setSaving(true);
 
     try {
       const keywords = formData.keywords.split(',').map(k => k.trim()).filter(Boolean);
 
-      const ruleData = {
+      const updateData = {
         name: formData.name,
         description: formData.description,
         keywords,
@@ -126,28 +95,87 @@ export default function NewRulePage() {
         mustBeFollower: formData.mustBeFollower,
         keywordLogic: 'OR',
         caseSensitive: false,
-        cooldownHours: 24,
-        maxDmsPerDay: 50,
       };
 
-      const response = await fetch('/api/rules', {
-        method: 'POST',
+      const response = await fetch(`/api/rules/${ruleId}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ruleData),
+        body: JSON.stringify(updateData),
       });
 
       if (response.ok) {
         router.push('/dashboard/rules');
       } else {
-        alert('Failed to create rule');
+        alert('Failed to update rule');
       }
     } catch (error) {
       console.error('Error:', error);
-      alert('Failed to create rule');
+      alert('Failed to update rule');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
+
+  const handleWorkflowSave = async (nodes: any[]) => {
+    setSaving(true);
+    try {
+      const updateData = {
+        name: formData.name || ruleData.name || 'Advanced Workflow',
+        description: 'Custom workflow automation',
+        workflow: nodes,
+        targetType: 'ALL_POSTS',
+        isActive: ruleData.isActive,
+      };
+
+      const response = await fetch(`/api/rules/${ruleId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData),
+      });
+
+      if (response.ok) {
+        router.push('/dashboard/rules');
+      } else {
+        alert('Failed to update workflow');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Failed to update workflow');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white p-6 flex items-center justify-center">
+        <div className="flex items-center gap-3">
+          <Loader2 className="h-6 w-6 animate-spin text-orange-600" />
+          <span className="text-gray-600">Loading rule...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !ruleData) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white p-6">
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-lg">
+            {error || 'Rule not found'}
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => router.push('/dashboard/rules')}
+            className="mt-4"
+          >
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Back to Rules
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white p-6">
@@ -156,15 +184,15 @@ export default function NewRulePage() {
         <div className="mb-8">
           <Button
             variant="ghost"
-            onClick={() => router.push('/dashboard')}
+            onClick={() => router.push('/dashboard/rules')}
             className="mb-4"
           >
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Back
+            Back to Rules
           </Button>
-          <h1 className="text-3xl font-bold text-gray-900">Create Automation Rule</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Edit Automation Rule</h1>
           <p className="text-gray-600 mt-2">
-            Choose between quick templates or build a custom workflow
+            Modify your automation rule configuration
           </p>
         </div>
 
@@ -188,7 +216,7 @@ export default function NewRulePage() {
                   />
                   <h3 className="font-semibold">Template Mode</h3>
                   <p className="text-sm text-gray-600">
-                    Quick setup with pre-built templates
+                    Simple keyword-based automation
                   </p>
                 </div>
               </button>
@@ -209,7 +237,7 @@ export default function NewRulePage() {
                   />
                   <h3 className="font-semibold">Advanced Mode</h3>
                   <p className="text-sm text-gray-600">
-                    Build custom workflows with triggers & conditions
+                    Complex workflows with conditions
                   </p>
                 </div>
               </button>
@@ -218,51 +246,11 @@ export default function NewRulePage() {
         </Card>
 
         {/* Template Mode */}
-        {mode === 'template' && !selectedTemplate && (
-          <div>
-            <h2 className="text-xl font-semibold mb-4 flex items-center">
-              <Sparkles className="h-5 w-5 mr-2 text-orange-600" />
-              Choose a Template
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {templates.map((template) => {
-                const Icon = template.icon;
-                return (
-                  <Card
-                    key={template.id}
-                    className="cursor-pointer hover:shadow-lg transition-shadow border-2 hover:border-orange-500"
-                    onClick={() => handleTemplateSelect(template.id)}
-                  >
-                    <CardHeader>
-                      <div className="flex items-start justify-between">
-                        <div className={`${template.color} p-3 rounded-lg`}>
-                          <Icon className="h-6 w-6 text-white" />
-                        </div>
-                        <Badge variant="secondary">Popular</Badge>
-                      </div>
-                      <CardTitle className="mt-4">{template.name}</CardTitle>
-                      <CardDescription>{template.description}</CardDescription>
-                    </CardHeader>
-                  </Card>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Template Form */}
-        {mode === 'template' && selectedTemplate && (
+        {mode === 'template' && (
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>Configure Template</CardTitle>
-                <Button
-                  variant="outline"
-                  onClick={() => setSelectedTemplate(null)}
-                >
-                  Change Template
-                </Button>
-              </div>
+              <CardTitle>Rule Configuration</CardTitle>
+              <CardDescription>Update your automation rule settings</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleTemplateSubmit} className="space-y-4">
@@ -276,6 +264,15 @@ export default function NewRulePage() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label>Description</Label>
+                  <Textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    rows={2}
+                  />
+                </div>
+
+                <div className="space-y-2">
                   <Label>Trigger Keywords *</Label>
                   <Input
                     value={formData.keywords}
@@ -283,6 +280,9 @@ export default function NewRulePage() {
                     placeholder="thank, thanks, love"
                     required
                   />
+                  <p className="text-xs text-gray-500">
+                    Comma-separated keywords that will trigger this rule
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -295,22 +295,31 @@ export default function NewRulePage() {
                   />
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex gap-3 pt-4">
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => router.push('/dashboard')}
+                    onClick={() => router.push('/dashboard/rules')}
                     className="flex-1"
                   >
                     Cancel
                   </Button>
                   <Button
                     type="submit"
-                    disabled={loading}
+                    disabled={saving}
                     className="flex-1 bg-orange-600 hover:bg-orange-700"
                   >
-                    <Check className="h-4 w-4 mr-2" />
-                    {loading ? 'Creating...' : 'Create Rule'}
+                    {saving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        Save Changes
+                      </>
+                    )}
                   </Button>
                 </div>
               </form>
@@ -322,9 +331,9 @@ export default function NewRulePage() {
         {mode === 'advanced' && (
           <Card>
             <CardHeader>
-              <CardTitle>Build Custom Workflow</CardTitle>
+              <CardTitle>Edit Custom Workflow</CardTitle>
               <CardDescription>
-                Create complex automations with multiple triggers, conditions, and actions
+                Modify your automation workflow with multiple triggers, conditions, and actions
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -332,14 +341,17 @@ export default function NewRulePage() {
                 <div>
                   <Label>Workflow Name *</Label>
                   <Input
-                    value={formData.name}
+                    value={formData.name || ruleData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder="My Custom Workflow"
                   />
                 </div>
               </div>
 
-              <WorkflowBuilder onSave={handleWorkflowSave} />
+              <WorkflowBuilder
+                onSave={handleWorkflowSave}
+                initialWorkflow={ruleData.workflow || []}
+              />
             </CardContent>
           </Card>
         )}

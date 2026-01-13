@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma';
 // GET - Get single rule
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth();
@@ -14,6 +14,7 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const params = await context.params;
     const rule = await prisma.automationRule.findFirst({
       where: {
         id: params.id,
@@ -41,7 +42,7 @@ export async function GET(
 // PATCH - Update rule
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth();
@@ -50,6 +51,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const params = await context.params;
     const body = await request.json();
 
     // Verify rule belongs to user
@@ -93,7 +95,7 @@ export async function PATCH(
 // DELETE - Delete rule
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth();
@@ -101,6 +103,8 @@ export async function DELETE(
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const params = await context.params;
 
     // Verify rule belongs to user
     const existingRule = await prisma.automationRule.findFirst({

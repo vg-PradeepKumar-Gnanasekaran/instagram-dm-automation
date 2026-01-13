@@ -23,7 +23,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Instagram OAuth scopes
+    // Instagram Graph API via Facebook Login
+    // Required for business features (comments, messaging APIs)
     const scopes = [
       'instagram_basic',
       'instagram_manage_comments',
@@ -32,11 +33,12 @@ export async function GET(request: NextRequest) {
       'pages_read_engagement',
     ].join(',');
 
-    const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(
+    // Use Facebook OAuth for Instagram Graph API
+    const authUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(
       redirectUri
     )}&scope=${scopes}&response_type=code&state=${session.user.id}`;
 
-    return NextResponse.json({ authUrl });
+    return NextResponse.redirect(authUrl);
   } catch (error) {
     console.error('Instagram connect error:', error);
     return NextResponse.json(

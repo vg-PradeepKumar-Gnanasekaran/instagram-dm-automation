@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
 /**
- * Instagram OAuth callback handler
- * Exchanges authorization code for access token
+ * Instagram Graph API OAuth callback via Facebook Login
+ * Flow: Facebook OAuth → Get Pages → Get Instagram Business Account
  */
 export async function GET(request: NextRequest) {
   try {
@@ -14,13 +14,13 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL}/dashboard?instagram=error&message=${error}`
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=${error}`
       );
     }
 
     if (!code || !state) {
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL}/dashboard?instagram=error&message=missing_params`
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=missing_params`
       );
     }
 
@@ -32,78 +32,113 @@ export async function GET(request: NextRequest) {
       throw new Error('Instagram OAuth not configured');
     }
 
-    // Exchange code for access token
-    const tokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        client_id: appId,
-        client_secret: appSecret,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-        code,
-      }),
-    });
+    // Step 1: Exchange code for Facebook access token
+    const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&code=${code}`;
+
+    const tokenResponse = await fetch(tokenUrl);
 
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.json();
       console.error('Token exchange failed:', errorData);
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL}/dashboard?instagram=error&message=token_exchange_failed`
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=token_exchange_failed`
       );
     }
 
     const tokenData = await tokenResponse.json();
-    const shortLivedToken = tokenData.access_token;
-    const instagramUserId = tokenData.user_id;
+    const accessToken = tokenData.access_token;
 
-    // Exchange short-lived token for long-lived token
-    const longLivedTokenResponse = await fetch(
-      `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${appSecret}&access_token=${shortLivedToken}`
+    // Step 2: Get user's Facebook Pages
+    const pagesResponse = await fetch(
+      `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`
     );
 
-    let accessToken = shortLivedToken;
-    let expiresIn = 3600; // 1 hour for short-lived
-
-    if (longLivedTokenResponse.ok) {
-      const longLivedData = await longLivedTokenResponse.json();
-      accessToken = longLivedData.access_token;
-      expiresIn = longLivedData.expires_in || 5184000; // 60 days
+    if (!pagesResponse.ok) {
+      return NextResponse.redirect(
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=no_pages_access`
+      );
     }
 
-    // Get Instagram username
-    const profileResponse = await fetch(
-      `https://graph.instagram.com/me?fields=username&access_token=${accessToken}`
+    const pagesData = await pagesResponse.json();
+
+    if (!pagesData.data || pagesData.data.length === 0) {
+      return NextResponse.redirect(
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=no_pages_found`
+      );
+    }
+
+    // Step 3: Get Instagram Business Account from first page
+    const firstPage = pagesData.data[0];
+    const pageAccessToken = firstPage.access_token;
+    const pageId = firstPage.id;
+
+    const igAccountResponse = await fetch(
+      `https://graph.facebook.com/v18.0/${pageId}?fields=instagram_business_account&access_token=${pageAccessToken}`
+    );
+
+    if (!igAccountResponse.ok) {
+      return NextResponse.redirect(
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=no_instagram_account`
+      );
+    }
+
+    const igAccountData = await igAccountResponse.json();
+
+    if (!igAccountData.instagram_business_account) {
+      return NextResponse.redirect(
+        `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=page_not_linked_to_instagram`
+      );
+    }
+
+    const instagramAccountId = igAccountData.instagram_business_account.id;
+
+    // Step 4: Get Instagram account details
+    const igProfileResponse = await fetch(
+      `https://graph.facebook.com/v18.0/${instagramAccountId}?fields=username&access_token=${pageAccessToken}`
     );
 
     let username = null;
-    if (profileResponse.ok) {
-      const profileData = await profileResponse.json();
-      username = profileData.username;
+    if (igProfileResponse.ok) {
+      const igProfileData = await igProfileResponse.json();
+      username = igProfileData.username;
     }
 
-    // Update user with Instagram credentials
+    // Step 5: Exchange for long-lived token (60 days)
+    const longLivedTokenResponse = await fetch(
+      `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${pageAccessToken}`
+    );
+
+    let finalToken = pageAccessToken;
+    let expiresIn = 5184000; // 60 days default
+
+    if (longLivedTokenResponse.ok) {
+      const longLivedData = await longLivedTokenResponse.json();
+      finalToken = longLivedData.access_token;
+      expiresIn = longLivedData.expires_in || 5184000;
+    }
+
+    // Step 6: Update user with Instagram credentials
     const tokenExpiry = new Date(Date.now() + expiresIn * 1000);
 
     await prisma.user.update({
       where: { id: state },
       data: {
-        instagramUserId,
+        instagramUserId: instagramAccountId,
         instagramUsername: username,
-        instagramToken: accessToken, // In production, encrypt this
+        instagramToken: finalToken, // In production, encrypt this
         instagramTokenExpiry: tokenExpiry,
       },
     });
 
     return NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL}/dashboard?instagram=success`
+      `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=success`
     );
   } catch (error) {
     console.error('Instagram callback error:', error);
     return NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL}/dashboard?instagram=error&message=callback_failed`
+      `${process.env.NEXTAUTH_URL}/dashboard/settings?instagram=error&message=callback_failed`
     );
   }
 }
